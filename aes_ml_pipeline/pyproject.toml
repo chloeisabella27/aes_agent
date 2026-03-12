@@ -1,0 +1,13 @@
+[project]
+name = "aes-ml-pipeline"
+version = "0.1.0"
+description = "ML pipeline for AES Ti MVV spectral prediction"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.10.0",
+    "google-auth>=2.0.0",
+    "google-api-python-client>=2.0.0",
+]
+
+[tool.uv]
+dev-dependencies = []

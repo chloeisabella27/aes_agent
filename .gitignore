@@ -1,0 +1,43 @@
+# Environment and secrets (never commit)
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Generated outputs (models, figures, inference results)
+outputs/
+
+# Large or generated data
+*.pth
+*.pkl
+*.pickle
+
+# IDE and OS
+.cursor/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Optional: uncomment to exclude notebooks or PDFs from repo
+# *.ipynb
+# *.pdf
