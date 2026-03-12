@@ -9,6 +9,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
+from typing import Optional
 
 # Ensure project root is on path so "from agent.tools import ..." works from any CWD
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +24,7 @@ from agent.tools import (
     resolve_experiment,
     predict_next_scan as tool_predict_next_scan,
     get_prediction_summary,
+    plot_predicted_spectrum,
 )
 
 # Load .env from project root
@@ -36,11 +38,25 @@ ALLOWED_TOOLS = {
     "resolve_experiment",
     "predict_next_scan",
     "get_prediction_summary",
+    "plot_predicted_spectrum",
 }
 MAX_TURNS = 8
 MAX_TOOL_CALLS = 3
 TOOL_TIMEOUT_SECONDS = 30
 GUARDRAIL_MESSAGE = "I'm sorry, I can't perform that task with the current AES analysis tools."
+
+# Conversation state: last experiment for which predict_next_scan succeeded (used for "plot it" follow-up)
+last_prediction_experiment: Optional[str] = None
+
+PLOT_IT_PHRASES = [
+    "plot it",
+    "plot that",
+    "plot the prediction",
+    "show the plot",
+    "visualize the prediction",
+    "show the predicted spectrum",
+    "yes please",
+]
 
 SYSTEM_PROMPT = """You are an AI assistant for Auger Electron Spectroscopy (AES) analysis.
 You are connected to a machine learning pipeline that predicts the next Ti MVV Auger spectrum.
@@ -49,6 +65,9 @@ You may only perform these tasks:
 1. List available experiments
 2. Predict the next Ti MVV spectrum for an experiment
 3. Explain prediction results (using only data returned from tools; never invent data)
+4. Generate a visualization of a predicted spectrum when the user asks to plot or visualize the prediction.
+
+You may generate a visualization of a predicted spectrum using plot_predicted_spectrum(experiment) when the user asks to plot or visualize the prediction.
 
 Rules:
 - Always use resolve_experiment when the user's experiment name might be misspelled or unclear.
@@ -108,6 +127,23 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "plot_predicted_spectrum",
+            "description": "Generate and save a PNG plot of the predicted Ti MVV spectrum for an experiment. Use this when the user asks to visualize or plot the prediction.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "experiment": {
+                        "type": "string",
+                        "description": "Experiment name such as TF268",
+                    },
+                },
+                "required": ["experiment"],
+            },
+        },
+    },
 ]
 
 
@@ -125,6 +161,8 @@ def _run_tool(name: str, arguments: dict) -> str:
             return tool_predict_next_scan(arguments.get("experiment", ""))
         if name == "get_prediction_summary":
             return get_prediction_summary(arguments.get("experiment"))
+        if name == "plot_predicted_spectrum":
+            return plot_predicted_spectrum(arguments.get("experiment", ""))
         return {"error": "unknown tool", "tool": name}
 
     try:
@@ -174,6 +212,14 @@ def _run_agent_turn(client: OpenAI, messages: list, tool_calls_count: int) -> tu
         except json.JSONDecodeError:
             args = {}
         result = _run_tool(name, args)
+        if name == "predict_next_scan":
+            try:
+                data = json.loads(result)
+                if "error" not in data and data.get("experiment"):
+                    global last_prediction_experiment
+                    last_prediction_experiment = args.get("experiment") or data.get("experiment")
+            except json.JSONDecodeError:
+                pass
         tool_messages.append({
             "role": "tool",
             "tool_call_id": tc.id,
@@ -202,6 +248,25 @@ def run_agent() -> None:
         if turn > MAX_TURNS:
             print("\nAgent: Maximum interaction depth reached.\n")
             continue
+
+        msg = user_input.strip().lower()
+        if any(phrase in msg for phrase in PLOT_IT_PHRASES):
+            if last_prediction_experiment is not None:
+                result = _run_tool("plot_predicted_spectrum", {"experiment": last_prediction_experiment})
+                try:
+                    data = json.loads(result)
+                    if data.get("plot_file"):
+                        print(f"\nAgent: Plot saved to: {data['plot_file']}\n")
+                    elif data.get("error"):
+                        print(f"\nAgent: {data['error']}\n")
+                    else:
+                        print(f"\nAgent: {result}\n")
+                except json.JSONDecodeError:
+                    print(f"\nAgent: {result}\n")
+            else:
+                print("\nAgent: No prediction has been generated yet. Please run a prediction first.\n")
+            continue
+
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_input},

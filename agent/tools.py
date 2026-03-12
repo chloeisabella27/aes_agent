@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import difflib
+import numpy as np
 
 # Project root = parent of agent/
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -173,3 +174,84 @@ def get_prediction_summary(experiment: Optional[str] = None) -> Dict[str, Any]:
         rec = all_records[0]
     rec = {k: v for k, v in rec.items() if not k.startswith("_")}
     return {"summary": rec, "experiment": rec.get("experiment"), "message": "OK"}
+
+
+def plot_predicted_spectrum(experiment: str) -> Dict[str, Any]:
+    """
+    Generate and save a PNG plot of the predicted Ti MVV spectrum for an experiment.
+    Only reads existing inference outputs (outputs/*-inference/); does not run the ML pipeline.
+    """
+    experiment = experiment.strip()
+    outputs_dir = _PROJECT_ROOT / "outputs"
+    if not outputs_dir.exists():
+        return {"error": "No outputs directory found.", "plot_file": None}
+
+    # 1. Locate latest prediction record: outputs/*-inference/{experiment}_scan*_lstm_prediction.json
+    candidates = []
+    for d in outputs_dir.iterdir():
+        if not d.is_dir() or not d.name.endswith("-inference"):
+            continue
+        for f in d.glob(f"{experiment}_scan*_lstm_prediction.json"):
+            try:
+                with open(f, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                data["_mtime"] = f.stat().st_mtime
+                data["_dir"] = d
+                candidates.append(data)
+            except Exception:
+                continue
+    if not candidates:
+        return {"error": f"No prediction record found for experiment '{experiment}'.", "plot_file": None}
+    candidates.sort(key=lambda x: x.get("_mtime", 0), reverse=True)
+    record = candidates[0]
+
+    # 2. Read prediction_file and predicted_scan_index from JSON
+    prediction_file = record.get("prediction_file")
+    if not prediction_file:
+        return {"error": "Prediction record has no prediction_file.", "plot_file": None}
+    # Resolve path (may be relative to project root)
+    pred_path = Path(prediction_file)
+    if not pred_path.is_absolute():
+        pred_path = _PROJECT_ROOT / pred_path
+    if not pred_path.exists():
+        return {"error": f"Spectrum file not found: {pred_path}", "plot_file": None}
+
+    # 3. Load spectrum data from .npz
+    try:
+        data_npz = np.load(pred_path)
+        if "energy" not in data_npz or "intensity" not in data_npz:
+            return {"error": "Invalid spectrum file format", "plot_file": None}
+        energy = data_npz["energy"]
+        intensity = data_npz["intensity"]
+    except Exception as e:
+        return {"error": str(e), "plot_file": None}
+
+    # 4. Generate plot with non-interactive backend
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    try:
+        plt.figure(figsize=(6, 4))
+        plt.plot(energy, intensity, linewidth=2)
+        plt.xlabel("Energy (eV)")
+        plt.ylabel("Normalized Intensity")
+        plt.title(f"Predicted Ti MVV Spectrum — {experiment}")
+        plt.grid(True, alpha=0.3)
+
+        # 5. Save next to the .npz file: same dir, name like TF268_scan5_lstm_spectrum_plot.png
+        out_dir = pred_path.parent
+        plot_name = pred_path.stem + "_plot.png"
+        plot_path = out_dir / plot_name
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+
+        # 6. Return structured JSON (path as string for portability)
+        plot_file_str = str(plot_path)
+        return {
+            "experiment": experiment,
+            "plot_file": plot_file_str,
+            "message": "Predicted spectrum plot saved successfully.",
+        }
+    except Exception as e:
+        return {"error": str(e), "plot_file": None}
